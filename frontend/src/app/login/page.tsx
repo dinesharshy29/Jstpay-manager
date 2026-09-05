@@ -24,7 +24,7 @@ export default function LoginPage() {
 
   async function handleGuestAccess() {
     setError(""); setLoading(true);
-    try { await signInAsGuest(); router.replace("/guest-demo"); }
+    try { await signInAsGuest(); router.replace("/dashboard"); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to start guest access."); }
     finally { setLoading(false); }
   }

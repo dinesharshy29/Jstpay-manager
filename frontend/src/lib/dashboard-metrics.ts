@@ -31,3 +31,20 @@ export const emptyMetrics: DashboardMetrics = {
   risk_alerts: 0,
   win_rate: null,
 };
+
+export const guestDemoMetrics: DashboardMetrics = {
+  total_transactions: 1248,
+  total_volume: 18426500,
+  successful_payments: 1176,
+  failed_payments: 72,
+  pending_payments: 18,
+  refunds: 24,
+  disputes: 7,
+  chargebacks: 3,
+  fraud_events: 31,
+  fraud_prevented: 428500,
+  chargeback_saved: 126000,
+  payment_links: 14,
+  risk_alerts: 5,
+  win_rate: 94.2,
+};

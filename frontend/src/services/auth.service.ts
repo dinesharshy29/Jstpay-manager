@@ -23,6 +23,7 @@ const errorMessages: Record<string, string> = {
   "auth/too-many-requests": "Too many attempts. Please try again later.",
   "auth/network-request-failed": "Network error. Check your connection and try again.",
   "auth/operation-not-allowed": "Guest access is not enabled in Firebase yet.",
+  "auth/admin-restricted-operation": "Guest access is disabled in Firebase. Enable Anonymous sign-in to continue as a guest.",
 };
 
 export function getAuthErrorMessage(error: unknown): string {

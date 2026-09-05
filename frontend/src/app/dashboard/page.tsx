@@ -4,19 +4,25 @@ import { ProtectedShell } from "@/components/ProtectedShell";
 import { WorkspaceFrame } from "@/components/WorkspaceFrame";
 import { useEffect, useState } from "react";
 import { apiRequest } from "@/lib/api";
-import { emptyMetrics, type DashboardMetrics } from "@/lib/dashboard-metrics";
+import { emptyMetrics, guestDemoMetrics, type DashboardMetrics } from "@/lib/dashboard-metrics";
 import { AddPaymentModal } from "@/components/AddPaymentModal";
 import { AIAssistantPanel } from "@/components/AIAssistantPanel";
 import { QuickActions } from "@/components/QuickActions";
+import { useAuth } from "@/components/providers/AuthProvider";
 
 function DashboardContent() {
-  const [metrics, setMetrics] = useState<DashboardMetrics>(emptyMetrics);
-  const [loading, setLoading] = useState(true);
+  const { role } = useAuth();
+  const isGuest = role === "guest";
+  const [metrics, setMetrics] = useState<DashboardMetrics>(isGuest ? guestDemoMetrics : emptyMetrics);
+  const [loading, setLoading] = useState(!isGuest);
   const [error, setError] = useState(false);
   const [showPayment, setShowPayment] = useState(false);
-  useEffect(() => { apiRequest<DashboardMetrics>("/api/dashboard/metrics").then(setMetrics).catch(() => setError(true)).finally(() => setLoading(false)); }, []);
+  useEffect(() => {
+    if (isGuest) return;
+    apiRequest<DashboardMetrics>("/api/dashboard/metrics").then(setMetrics).catch(() => setError(true)).finally(() => setLoading(false));
+  }, [isGuest]);
   const hasActivity = metrics.total_transactions > 0;
-  return <WorkspaceFrame eyebrow="Command center" title="Your risk command center." subtitle="Monitor payment activity, surface emerging threats, and resolve disputes with AI-powered intelligence."><div className="hero-status"><i /> Risk monitoring active <span>·</span> {error ? "Connection unavailable" : "All systems operational"}</div>{error && <div className="dashboard-error" role="alert"><strong>Risk intelligence temporarily unavailable.</strong><button onClick={() => window.location.reload()} type="button">Retry</button></div>}<section className="metric-grid premium-metrics"><Metric label="Total transactions" value={loading ? "..." : metrics.total_transactions.toLocaleString()} detail="From your workspace" /><Metric label="Payment volume" value={loading ? "..." : formatRupees(metrics.total_volume)} detail="Captured payments only" /><Metric label="Fraud prevented" value={loading ? "..." : formatRupees(metrics.fraud_prevented)} detail={metrics.fraud_events ? `${metrics.fraud_events} risk events` : "Not available yet"} /><Metric label="Chargebacks" value={loading ? "..." : metrics.chargebacks.toLocaleString()} detail={metrics.disputes ? `${metrics.disputes} disputes` : "No disputes yet"} /></section><div className="dashboard-columns"><div>{!loading && !hasActivity ? <EmptyDashboard onAddPayment={() => setShowPayment(true)} /> : <ActivitySummary metrics={metrics} />}<QuickActions onAddPayment={() => setShowPayment(true)} /></div><AIAssistantPanel /></div>{showPayment && <AddPaymentModal onClose={() => setShowPayment(false)} onCreated={() => window.location.reload()} />}</WorkspaceFrame>;
+  return <WorkspaceFrame eyebrow={isGuest ? "Guest demo workspace" : "Command center"} title={isGuest ? "Explore your risk command center." : "Your risk command center."} subtitle={isGuest ? "Review sample payment activity and risk signals. Guest data is read-only and uses examples only." : "Monitor payment activity, surface emerging threats, and resolve disputes with AI-powered intelligence."}><div className="hero-status"><i /> {isGuest ? "Demo data · read-only" : "Risk monitoring active"} <span>·</span> {error ? "Connection unavailable" : isGuest ? "Sample money only" : "All systems operational"}</div>{error && <div className="dashboard-error" role="alert"><strong>Risk intelligence temporarily unavailable.</strong><button onClick={() => window.location.reload()} type="button">Retry</button></div>}{isGuest && <div className="demo-money-notice" role="note"><strong>Example money only</strong><span>₹ values below are simulated and do not represent real payments.</span></div>}<section className="metric-grid premium-metrics"><Metric label="Total transactions" value={loading ? "..." : metrics.total_transactions.toLocaleString()} detail={isGuest ? "Demo activity" : "From your workspace"} /><Metric label="Payment volume" value={loading ? "..." : formatRupees(metrics.total_volume)} detail={isGuest ? "Simulated captured payments" : "Captured payments only"} /><Metric label="Fraud prevented" value={loading ? "..." : formatRupees(metrics.fraud_prevented)} detail={metrics.fraud_events ? `${metrics.fraud_events} risk events` : "Not available yet"} /><Metric label="Chargebacks" value={loading ? "..." : metrics.chargebacks.toLocaleString()} detail={metrics.disputes ? `${metrics.disputes} disputes` : "No disputes yet"} /></section><div className="dashboard-columns"><div>{!loading && !hasActivity ? <EmptyDashboard onAddPayment={() => setShowPayment(true)} /> : <ActivitySummary metrics={metrics} />}<QuickActions onAddPayment={() => setShowPayment(true)} /></div><AIAssistantPanel /></div>{showPayment && <AddPaymentModal onClose={() => setShowPayment(false)} onCreated={() => window.location.reload()} />}</WorkspaceFrame>;
 }
 
 function formatRupees(paise: number) { return `₹${(paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`; }
