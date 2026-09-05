@@ -26,6 +26,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
+    if (nextUser.isAnonymous) {
+      setRole("guest");
+      setLoading(false);
+      return;
+    }
     try {
       setRole(((await nextUser.getIdTokenResult()).claims.role as string | undefined) ?? null);
     } catch {

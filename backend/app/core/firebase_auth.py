@@ -33,7 +33,9 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
         logger.warning("Firebase token verification failed: %s", type(error).__name__)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Firebase could not verify your sign-in token") from error
     identity = get_or_create_identity(decoded["uid"], decoded.get("email"), decoded.get("name"))
-    return {"uid": decoded["uid"], "email": decoded.get("email"), "name": decoded.get("name"), "role": decoded.get("role"), **identity}
+    firebase_claims = decoded.get("firebase", {})
+    role = decoded.get("role") or ("guest" if firebase_claims.get("sign_in_provider") == "anonymous" else None)
+    return {"uid": decoded["uid"], "email": decoded.get("email"), "name": decoded.get("name"), "role": role, **identity}
 
 
 def require_guest(user: dict = Depends(get_current_user)) -> dict:
