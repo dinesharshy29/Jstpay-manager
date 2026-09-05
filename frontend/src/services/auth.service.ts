@@ -2,7 +2,7 @@ import {
   browserLocalPersistence,
   createUserWithEmailAndPassword,
   getIdToken as firebaseGetIdToken,
-  onAuthStateChanged,
+  onIdTokenChanged,
   sendPasswordResetEmail,
   setPersistence,
   signInWithEmailAndPassword,
@@ -75,4 +75,4 @@ export async function resetPassword(email: string): Promise<void> {
   }
 }
 
-export { onAuthStateChanged };
+export { onIdTokenChanged };

@@ -1,4 +1,4 @@
-import { getIdToken } from "@/services/auth.service";
+import { getIdToken, signOut } from "@/services/auth.service";
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -16,6 +16,11 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
     throw new Error(`Unable to reach the API at ${apiUrl}. Check that the backend is running and CORS allows this frontend.`);
   }
   if (!response.ok) {
+    if (response.status === 401) {
+      await signOut().catch(() => undefined);
+      if (typeof window !== "undefined" && window.location.pathname !== "/login") window.location.replace("/login");
+      throw new Error("Your session has expired. Please sign in again.");
+    }
     let message = `Request failed with status ${response.status}`;
     try {
       const body = await response.json() as { detail?: string; error?: { message?: string } };

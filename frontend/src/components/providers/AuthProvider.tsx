@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { User } from "firebase/auth";
 import { getFirebaseAuth } from "@/lib/firebase";
-import { onAuthStateChanged } from "@/services/auth.service";
+import { onIdTokenChanged } from "@/services/auth.service";
 
 type AuthContextValue = {
   user: User | null;
@@ -19,7 +19,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => onAuthStateChanged(getFirebaseAuth(), async (nextUser) => {
+  useEffect(() => onIdTokenChanged(getFirebaseAuth(), async (nextUser) => {
     setUser(nextUser);
     if (!nextUser) {
       setRole(null);
