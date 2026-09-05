@@ -1,0 +1,9 @@
+{
+  "name": "ai-risk-manager-fork",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fork of Hyperswitch for AI Risk Manager project.",
+  "devDependencies": {
+    "newman": "git+ssh://git@github.com:knutties/newman.git#7106e194c15d49d066fa09d9a2f18b2238f3dba8"
+  }
+}
