@@ -1,18 +1,22 @@
 import hashlib
 import hmac
 import json
+import uuid
+import time
 from decimal import Decimal
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .core.firebase_auth import get_current_merchant, get_current_user, get_non_guest_merchant, require_guest, require_non_guest
 from .core.settings import CORS_ORIGINS, RAZORPAY_MODE, razorpay_is_configured
 from .db.connection import ensure_schema, get_connection
 from .integrations.razorpay_client import RazorpayClient, RazorpayNotConfiguredError
-from .integrations.openrouter_client import OpenRouterError, OpenRouterProvider
+from .integrations.nim_client import NIMError, NVIDIAProvider
+from .services.copilot_context import build_messages
 
 app = FastAPI(title="AI Risk Manager API")
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -74,6 +78,9 @@ class AIChatRequest(BaseModel):
     page: str = Field(default="/dashboard", max_length=300)
     page_title: str = Field(default="Risk Center", max_length=160)
     history: list[dict[str, str]] = Field(default_factory=list, max_length=12)
+    conversation_id: str | None = None
+    entity_type: str | None = Field(default=None, max_length=40)
+    entity_id: str | None = Field(default=None, max_length=120)
 
 
 def score_transaction(amount: int, currency: str, customer_email: str | None, customer_phone: str | None) -> tuple[int, str, list[str]]:
@@ -215,34 +222,57 @@ def risk_events(limit: int = Query(default=25, ge=1, le=100), user: dict = Depen
     return {"items": items, "total": len(items)}
 
 
-@app.post("/api/ai/chat")
-def ai_chat(payload: AIChatRequest, user: dict = Depends(get_current_user)) -> dict[str, str]:
-    merchant_id = user["merchant"]["id"]
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT COUNT(*)::int AS transactions, COALESCE(SUM(amount) FILTER (WHERE status IN ('captured', 'succeeded')), 0)::bigint AS volume, COUNT(*) FILTER (WHERE status IN ('captured', 'succeeded'))::int AS successful, COUNT(*) FILTER (WHERE status = 'failed')::int AS failed FROM transactions WHERE merchant_id = %s", (merchant_id,))
-            metrics = cursor.fetchone()
-            cursor.execute("SELECT COUNT(*)::int AS disputes FROM disputes WHERE merchant_id = %s", (merchant_id,))
-            disputes_count = cursor.fetchone()["disputes"]
-            cursor.execute("SELECT COUNT(*)::int AS payment_links FROM payment_links WHERE merchant_id = %s", (merchant_id,))
-            links_count = cursor.fetchone()["payment_links"]
+@app.get("/api/ai/health")
+def ai_health(user: dict = Depends(get_current_user)) -> dict[str, object]:
+    return NVIDIAProvider().health()
 
-    context = {
-        "user": {"email": user.get("email"), "display_name": user["user"].get("display_name")},
-        "workspace": {"name": user["merchant"].get("business_name"), "currency": user["merchant"].get("currency", "INR")},
-        "metrics": {**metrics, "disputes": disputes_count, "payment_links": links_count},
-        "current_page": {"route": payload.page, "title": payload.page_title},
-        "razorpay": {"configured": razorpay_is_configured(), "mode": RAZORPAY_MODE},
-    }
-    system = """You are the AI Assistant inside AI Risk Manager. Help authenticated merchants understand their payment activity, risk signals, disputes, integrations, and business operations. Use only the authorized application context below for application facts. Never invent transaction data or claim an action succeeded. Clearly distinguish live application facts from general business knowledge. Be concise and useful. You are not the final authority for financial, legal, compliance, or payment decisions."""
-    messages = [{"role": "system", "content": f"{system}\nAuthorized application context: {json.dumps(context, default=str)}"}]
-    messages.extend(payload.history[-12:])
-    messages.append({"role": "user", "content": payload.message})
+
+@app.post("/api/ai/chat")
+def ai_chat(payload: AIChatRequest, user: dict = Depends(get_current_user)) -> StreamingResponse:
+    provider = NVIDIAProvider()
     try:
-        answer = OpenRouterProvider().chat(messages=messages)
-    except OpenRouterError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    return {"answer": answer, "page": payload.page}
+        messages, sources = build_messages(user, payload.message, payload.page, payload.history, payload.entity_type, payload.entity_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Workspace context could not be retrieved.") from exc
+    merchant_id = user["merchant"]["id"]
+    user_id = user["user"]["id"]
+    conversation_id = payload.conversation_id
+    if conversation_id:
+        try:
+            uuid.UUID(conversation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="conversation_id must be a valid UUID") from exc
+    started = time.monotonic()
+
+    def events():
+        nonlocal conversation_id
+        assistant_content = ""
+        try:
+            with get_connection() as connection:
+                with connection.cursor() as cursor:
+                    if conversation_id:
+                        cursor.execute("SELECT id FROM ai_conversations WHERE id = %s AND user_id = %s AND merchant_id = %s", (conversation_id, user_id, merchant_id))
+                        if cursor.fetchone() is None:
+                            conversation_id = None
+                    if not conversation_id:
+                        cursor.execute("INSERT INTO ai_conversations (user_id, merchant_id, title) VALUES (%s, %s, %s) RETURNING id", (user_id, merchant_id, payload.message[:80]))
+                        conversation_id = str(cursor.fetchone()["id"])
+                    cursor.execute("INSERT INTO ai_messages (conversation_id, user_id, merchant_id, role, content) VALUES (%s, %s, %s, 'user', %s)", (conversation_id, user_id, merchant_id, payload.message))
+                connection.commit()
+            yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conversation_id, 'sources': sources})}\n\n"
+            for chunk in provider.stream(messages):
+                assistant_content += chunk
+                yield f"data: {json.dumps({'type': 'delta', 'content': chunk})}\n\n"
+            with get_connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("INSERT INTO ai_messages (conversation_id, user_id, merchant_id, role, content, sources) VALUES (%s, %s, %s, 'assistant', %s, %s)", (conversation_id, user_id, merchant_id, assistant_content, json.dumps(sources)))
+                    cursor.execute("INSERT INTO audit_logs (user_id, merchant_id, action, resource_type, resource_id, result, metadata) VALUES (%s, %s, 'ai_copilot_request', 'conversation', %s, 'success', %s)", (user_id, merchant_id, conversation_id, json.dumps({'model': provider.model, 'latency_ms': round((time.monotonic() - started) * 1000)})))
+                connection.commit()
+            yield "data: {\"type\": \"done\"}\n\n"
+        except NIMError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/transactions")

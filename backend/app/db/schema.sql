@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS users (
     id BIGSERIAL PRIMARY KEY,
     firebase_uid TEXT NOT NULL UNIQUE,
@@ -154,6 +156,26 @@ CREATE TABLE IF NOT EXISTS razorpay_webhook_events (
     processed_at TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS ai_conversations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    merchant_id BIGINT NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'Risk Copilot conversation',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_id UUID NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    merchant_id BIGINT NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_merchants_user_id ON merchants(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_owner ON orders(user_id, merchant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_payments_owner ON payments(user_id, merchant_id, created_at DESC);
@@ -162,5 +184,7 @@ CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
 CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_disputes_owner ON disputes(user_id, merchant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_risk_events_owner ON risk_events(user_id, merchant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_owner ON ai_conversations(user_id, merchant_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id, created_at);
 
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS risk_factors JSONB NOT NULL DEFAULT '[]'::jsonb;
