@@ -10,12 +10,16 @@ from pydantic import BaseModel, Field
 
 from .core.firebase_auth import get_current_merchant, get_current_user, get_non_guest_merchant, require_guest, require_non_guest
 from .core.settings import CORS_ORIGINS, RAZORPAY_MODE, razorpay_is_configured
-from .db.connection import get_connection
+from .db.connection import ensure_schema, get_connection
 from .integrations.razorpay_client import RazorpayClient, RazorpayNotConfiguredError
 from .integrations.openrouter_client import OpenRouterError, OpenRouterProvider
 
 app = FastAPI(title="AI Risk Manager API")
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+@app.on_event("startup")
+def initialize_database() -> None:
+    ensure_schema()
 
 @app.get("/health")
 def health() -> dict[str, str]:
