@@ -76,6 +76,29 @@ class AIChatRequest(BaseModel):
     history: list[dict[str, str]] = Field(default_factory=list, max_length=12)
 
 
+def score_transaction(amount: int, currency: str, customer_email: str | None, customer_phone: str | None) -> tuple[int, str, list[str]]:
+    factors: list[str] = []
+    score = 0
+    if amount >= 500000:
+        score += 45
+        factors.append("high_amount")
+    elif amount >= 100000:
+        score += 25
+        factors.append("elevated_amount")
+    if not customer_email:
+        score += 15
+        factors.append("missing_customer_email")
+    if not customer_phone:
+        score += 10
+        factors.append("missing_customer_phone")
+    if currency.upper() not in {"INR", "USD", "EUR", "GBP"}:
+        score += 15
+        factors.append("unusual_currency")
+    score = min(score, 100)
+    level = "critical" if score >= 76 else "high" if score >= 51 else "medium" if score >= 26 else "low"
+    return score, level, factors
+
+
 def cents(amount: Decimal) -> int:
     value = int(amount * 100)
     if amount != Decimal(value) / 100:
@@ -141,14 +164,55 @@ def dashboard_metrics(user: dict = Depends(get_current_user)) -> dict[str, Any]:
                     (SELECT COUNT(*) FROM disputes WHERE merchant_id = %s)::int AS disputes,
                     (SELECT COUNT(*) FROM disputes WHERE merchant_id = %s AND status IN ('open', 'needs_response'))::int AS chargebacks,
                     (SELECT COUNT(*) FROM risk_events WHERE merchant_id = %s)::int AS fraud_events,
+                    (SELECT COUNT(*) FROM risk_events WHERE merchant_id = %s AND score >= 51)::int AS risk_alerts,
                     (SELECT COUNT(*) FROM payment_links WHERE merchant_id = %s)::int AS payment_links,
-                    0::bigint AS fraud_prevented,
-                    0::bigint AS chargeback_saved,
-                    0::int AS risk_alerts
+                    COALESCE(SUM(amount) FILTER (WHERE risk_level IN ('high', 'critical')), 0)::bigint AS fraud_prevented,
+                    COALESCE(SUM(amount) FILTER (WHERE risk_level = 'critical'), 0)::bigint AS chargeback_saved
                 FROM transactions WHERE merchant_id = %s
-            """, (merchant_id, merchant_id, merchant_id, merchant_id, merchant_id, merchant_id))
+            """, (merchant_id, merchant_id, merchant_id, merchant_id, merchant_id, merchant_id, merchant_id))
             result = cursor.fetchone()
     return {**result, "win_rate": None}
+
+
+@app.get("/api/analytics")
+def analytics(days: int = Query(default=30, ge=7, le=90), user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT calendar.day::date AS date,
+                       COUNT(t.id)::int AS transactions,
+                       COALESCE(SUM(t.amount) FILTER (WHERE t.status IN ('captured', 'succeeded')), 0)::bigint AS volume,
+                       COUNT(t.id) FILTER (WHERE t.status IN ('captured', 'succeeded'))::int AS successful,
+                       COUNT(t.id) FILTER (WHERE t.status = 'failed')::int AS failed,
+                       COUNT(t.id) FILTER (WHERE t.risk_level IN ('high', 'critical'))::int AS high_risk
+                FROM generate_series(CURRENT_DATE - (%s - 1), CURRENT_DATE, interval '1 day') AS calendar(day)
+                LEFT JOIN transactions t ON t.merchant_id = %s AND t.created_at::date = calendar.day::date
+                GROUP BY calendar.day ORDER BY calendar.day
+            """, (days, user["merchant"]["id"]))
+            items = cursor.fetchall()
+    return {"days": days, "items": items}
+
+
+@app.get("/api/transactions/{transaction_id}")
+def transaction_detail(transaction_id: int, user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM transactions WHERE id = %s AND merchant_id = %s", (transaction_id, user["merchant"]["id"]))
+            transaction = cursor.fetchone()
+            if transaction is None:
+                raise HTTPException(status_code=404, detail="Transaction not found")
+            cursor.execute("SELECT event_type, score, created_at FROM risk_events WHERE transaction_id = %s AND merchant_id = %s ORDER BY created_at DESC", (transaction_id, user["merchant"]["id"]))
+            risk_events = cursor.fetchall()
+    return {"transaction": transaction, "risk_events": risk_events}
+
+
+@app.get("/api/risk/events")
+def risk_events(limit: int = Query(default=25, ge=1, le=100), user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT re.*, t.amount, t.currency, t.customer_name, t.status, t.risk_level FROM risk_events re LEFT JOIN transactions t ON t.id = re.transaction_id WHERE re.merchant_id = %s ORDER BY re.created_at DESC LIMIT %s", (user["merchant"]["id"], limit))
+            items = cursor.fetchall()
+    return {"items": items, "total": len(items)}
 
 
 @app.post("/api/ai/chat")
@@ -205,6 +269,7 @@ def disputes(limit: int = Query(default=25, ge=1, le=100), offset: int = Query(d
 def create_order(payload: OrderCreate, user: dict = Depends(require_non_guest)) -> dict[str, Any]:
     amount = cents(payload.amount)
     merchant_id = user["merchant"]["id"]
+    risk_score, risk_level, risk_factors = score_transaction(amount, payload.currency, payload.customer_email, payload.customer_phone)
     try:
         razorpay_client = RazorpayClient()
         razorpay_order = razorpay_client.create_order(amount=amount, currency=payload.currency.upper(), receipt=payload.receipt, notes=payload.notes)
@@ -216,9 +281,13 @@ def create_order(payload: OrderCreate, user: dict = Depends(require_non_guest)) 
         with connection.cursor() as cursor:
             cursor.execute("INSERT INTO orders (user_id, merchant_id, razorpay_order_id, amount, currency, receipt) VALUES (%s, %s, %s, %s, %s, %s) RETURNING *", (user["user"]["id"], merchant_id, razorpay_order["id"], amount, payload.currency.upper(), payload.receipt))
             order = cursor.fetchone()
-            cursor.execute("INSERT INTO transactions (user_id, merchant_id, order_id, razorpay_order_id, amount, currency, customer_name, customer_email, customer_phone, description) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id", (user["user"]["id"], merchant_id, order["id"], razorpay_order["id"], amount, payload.currency.upper(), payload.customer_name, payload.customer_email, payload.customer_phone, payload.description))
+            cursor.execute("INSERT INTO transactions (user_id, merchant_id, order_id, razorpay_order_id, amount, currency, customer_name, customer_email, customer_phone, description, fraud_score, risk_level, risk_factors) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id", (user["user"]["id"], merchant_id, order["id"], razorpay_order["id"], amount, payload.currency.upper(), payload.customer_name, payload.customer_email, payload.customer_phone, payload.description, risk_score, risk_level, json.dumps(risk_factors)))
+            transaction = cursor.fetchone()
+            if risk_score >= 51:
+                cursor.execute("INSERT INTO risk_events (user_id, merchant_id, transaction_id, event_type, score) VALUES (%s, %s, %s, %s, %s)", (user["user"]["id"], merchant_id, transaction["id"], "transaction_flagged", risk_score))
+            cursor.execute("INSERT INTO audit_logs (user_id, merchant_id, action, resource_type, resource_id, result, metadata) VALUES (%s, %s, %s, %s, %s, %s, %s)", (user["user"]["id"], merchant_id, "transaction_created", "transaction", str(transaction["id"]), "success", json.dumps({"risk_score": risk_score, "risk_level": risk_level})))
         connection.commit()
-    return {"key_id": razorpay_client.key_id, "order_id": razorpay_order["id"], "amount": amount, "currency": payload.currency.upper(), "order": order}
+    return {"key_id": razorpay_client.key_id, "order_id": razorpay_order["id"], "amount": amount, "currency": payload.currency.upper(), "order": order, "risk_score": risk_score, "risk_level": risk_level, "risk_factors": risk_factors}
 
 
 @app.post("/api/payments/verify")

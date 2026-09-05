@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     fraud_score NUMERIC,
     chargeback_risk NUMERIC,
     risk_level TEXT,
+    risk_factors JSONB NOT NULL DEFAULT '[]'::jsonb,
     description TEXT,
     internal_note TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -161,3 +162,5 @@ CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
 CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_disputes_owner ON disputes(user_id, merchant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_risk_events_owner ON risk_events(user_id, merchant_id, created_at DESC);
+
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS risk_factors JSONB NOT NULL DEFAULT '[]'::jsonb;

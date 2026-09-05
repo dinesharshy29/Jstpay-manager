@@ -1,4 +1,10 @@
-import { FeaturePage } from "@/components/FeaturePage";
-import { ProtectedShell } from "@/components/ProtectedShell";
+"use client";
 
-export default function RiskMonitoringPage() { return <ProtectedShell><FeaturePage eyebrow="Risk intelligence" title="Risk monitoring" subtitle="Track risk signals and model health across your workspace." message="Risk model is not connected." action={{ label: "View transactions", href: "/transactions" }} /></ProtectedShell>; }
+import { useEffect, useState } from "react";
+import { ProtectedShell } from "@/components/ProtectedShell";
+import { WorkspaceFrame } from "@/components/WorkspaceFrame";
+import { apiRequest } from "@/lib/api";
+
+type RiskEvent = { id: number; score: number; risk_level: string | null; transaction_id: number | null; event_type: string; created_at: string };
+
+export default function RiskMonitoringPage() { const [events, setEvents] = useState<RiskEvent[]>([]); const [error, setError] = useState(""); useEffect(() => { apiRequest<{ items: RiskEvent[] }>("/api/risk/events").then((result) => setEvents(result.items)).catch((reason) => setError(reason instanceof Error ? reason.message : "Risk activity could not be loaded.")); }, []); const average = events.length ? Math.round(events.reduce((sum, event) => sum + Number(event.score), 0) / events.length) : 0; return <ProtectedShell><WorkspaceFrame eyebrow="Risk intelligence" title="Risk monitoring" subtitle="Track explainable risk signals and model activity across your workspace."><section className="summary-strip"><article><span>Flagged events</span><strong>{events.length}</strong><small>Latest activity window</small></article><article><span>Average score</span><strong>{average}</strong><small>Across flagged events</small></article><article><span>Engine status</span><strong>Ready</strong><small>Deterministic scoring active</small></article></section>{error && <div className="dashboard-error" role="alert"><strong>{error}</strong><button onClick={() => window.location.reload()} type="button">Retry</button></div>}<section className="glass-primary monitoring-panel"><div className="section-heading"><span className="section-eyebrow">Recent suspicious activity</span><h2>Risk event stream</h2></div>{events.length ? events.map((event) => <div className="monitoring-row" key={event.id}><span className={`status status-${event.risk_level ?? "high"}`}>{event.risk_level ?? "high"}</span><strong>{event.event_type.replaceAll("_", " ")}</strong><span>Transaction #{event.transaction_id ?? "unknown"}</span><span>{event.score}/100</span><small>{new Date(event.created_at).toLocaleString()}</small></div>) : !error && <p className="empty-state">No suspicious events have been recorded yet.</p>}</section></WorkspaceFrame></ProtectedShell>; }
